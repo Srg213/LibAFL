@@ -82,6 +82,7 @@ use std::{
     io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     sync::mpsc::channel,
+    time::Instant,
     thread,
 };
 
@@ -1755,6 +1756,8 @@ where
     pub llmp_clients: Vec<LlmpReceiver<SP>>,
     /// The ShMemProvider to use
     shmem_provider: SP,
+    /// Last time message for client
+    pub last_msg_time_for_client: Vec<Instant>,
 }
 
 /// A signal handler for the [`LlmpBroker`].
@@ -1801,6 +1804,7 @@ where
             },
             llmp_clients: vec![],
             shmem_provider,
+            last_msg_time_for_client: vec![],
         })
     }
 
@@ -1836,6 +1840,7 @@ where
             shmem_provider: self.shmem_provider.clone(),
             highest_msg_id: 0,
         });
+        self.last_msg_time_for_client.push(Instant::now());
     }
 
     /// Connects to a broker running on another machine.
@@ -1935,9 +1940,20 @@ where
         F: FnMut(ClientId, Tag, Flags, &[u8]) -> Result<LlmpMsgHookResult, Error>,
     {
         let mut new_messages = false;
-        for i in 0..self.llmp_clients.len() {
+        let mut index: u32 = 0;
+        while self.llmp_clients.len() > 0 && index < self.llmp_clients.len() as u32 {
             unsafe {
-                new_messages |= self.handle_new_msgs(i as u32, on_new_msg)?;
+                new_messages |= self.handle_new_msgs(index, on_new_msg)?;
+                if new_messages == true {
+                    self.last_msg_time_for_client[index as usize] = Instant::now();
+                    index = index + 1;
+                }
+                else {
+                    if self.last_msg_time_for_client[index as usize].elapsed().as_secs() > 1 {
+                        self.llmp_clients.remove(index as usize);
+                        self.last_msg_time_for_client.remove(index as usize);
+                    }
+                }
             }
         }
         Ok(new_messages)
@@ -2465,6 +2481,7 @@ where
                                 shmem_provider: self.shmem_provider.clone(),
                                 highest_msg_id: 0,
                             });
+                            self.last_msg_time_for_client.push(Instant::now());
                         }
                         Err(e) => {
                             #[cfg(feature = "std")]
